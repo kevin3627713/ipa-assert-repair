@@ -1,0 +1,50 @@
+name: Build IPA Repair
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipa-repair-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Flutter 3.35.4
+        run: |
+          git clone --depth 1 --branch 3.35.4 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
+      - name: Install dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Analyze and test
+        run: |
+          flutter analyze --fatal-infos
+          flutter test
+      - name: Build without Apple certificate
+        run: flutter build ios --release --no-codesign --build-name=1.0.0 --build-number="$GITHUB_RUN_NUMBER"
+      - name: Prepare signatures and package IPA
+        run: |
+          mkdir -p dist
+          bash scripts/package_unsigned_ipa.sh build/ios/iphoneos/Runner.app dist/IPA-Assert-Repair-v1.0.0.ipa
+      - name: Check the tool's own IPA with its repair engine
+        run: |
+          dart run tool/repair.dart dist/IPA-Assert-Repair-v1.0.0.ipa build/self-check.ipa > build/self-check.json
+          python3 -c 'import json; r=json.load(open("build/self-check.json")); assert r["allLegacyAssertionsPass"] and not r["changedFiles"]'
+          cd dist
+          shasum -a 256 *.ipa > SHA256SUMS.txt
+      - name: Upload IPA
+        uses: actions/upload-artifact@v5
+        with:
+          name: IPA-Assert-Repair-v1.0.0
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
